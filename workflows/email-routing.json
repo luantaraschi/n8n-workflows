@@ -1,0 +1,506 @@
+{
+  "name": "email routing",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": true,
+        "filters": {
+          "q": "={{$env.GMAIL_SEARCH_QUERY || 'from:(destinatario@exemplo.com) subject:\"Frase chave\" newer_than:1d'}}"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        600,
+        1440
+      ],
+      "name": "Listar e-mails Astrea (último dia)1",
+      "id": "e0285524-5f59-41aa-afb8-2b888368bf79"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "messageId": "={{$json.id}}",
+        "simple": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        800,
+        1440
+      ],
+      "id": "5c886a1c-4731-4911-9e4f-8991868afa43",
+      "name": "Baixar corpo do e-mail1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Helpers =====\nfunction htmlToText(html) {\n  if (!html) return '';\n  return html\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, '')\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<\\/li>/gi, '\\n')\n    .replace(/<\\/h\\d>/gi, '\\n')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/\\u00A0/g, ' ')\n    .replace(/\\s+\\n/g, '\\n')\n    .replace(/\\n{2,}/g, '\\n')\n    .trim();\n}\nconst NOISE = [\n  /Se você quiser cadastrar tarefas.*$/i,\n  /^Obrigado!?$/i, /^Equipe Astrea$/i,\n  /^Telefone:.*$/i, /^E-?mail:.*$/i,\n  /^Usuário:.*$/i, /^Link para pagamento.*$/i,\n  /^http[s]?:\\/\\/\\S+$/i, /^pagar\\.me.*$/i\n];\nfunction cleanLines(text) {\n  return text\n    .split(/\\r?\\n/)\n    .map(s => s.trim())\n    .filter(Boolean)\n    .filter(l => !NOISE.some(rx => rx.test(l)));\n}\nfunction pick(re, text, fallback='Não informado') {\n  const m = text.match(re);\n  return m ? m[1].trim() : fallback;\n}\n\nconst cases = [];\nfor (const email of items) {\n  const j = email.json;\n  const raw = (j.text && j.text.trim()) || htmlToText(j.html) || htmlToText(j.textAsHtml) || '';\n  const lines = cleanLines(raw);\n\n  const processo = pick(/(?:Número|N[º°o]|Num\\.?)\\s*:\\s*([\\d.\\-\\/]+)/i, raw);\n  const juizo    = pick(/Ju[ií]zo\\s*:\\s*([^\\n]+)/i, raw);\n  const cliente  = pick(/Clientes?\\s*:\\s*([^\\n]+)/i, raw);\n\n  // agrupar por data\n  const groups = [];\n  let buf = null;\n  for (const l of lines) {\n    const dm = l.match(/\\b(\\d{2}\\/\\d{2}\\/\\d{4})\\b/);\n    if (dm) { if (buf) groups.push(buf.join(' ')); buf = [dm[1]]; }\n    else if (buf) buf.push(l);\n  }\n  if (buf) groups.push(buf.join(' '));\n\n  // limpa duplicatas e deixa só o essencial\n  const seen = new Set();\n  const andamentos = groups\n    .map(s => s\n      .replace(/\\s{2,}/g, ' ')\n      .replace(/ ?— ?/g, ' — ')\n      .trim())\n    .filter(s => { const k=s.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });\n\n  cases.push({ processo, cliente, juizo, andamentos });\n}\n\n// Texto para a IA (enxuto)\nconst todayBR = $now.setZone('America/Sao_Paulo').toFormat('dd/MM/yyyy');\nlet aiText = `Relatório de Andamentos - ${todayBR}\\n\\n`;\nfor (const c of cases) {\n  aiText += `Processo: ${c.processo}\\nCliente: ${c.cliente}\\nJuízo: ${c.juizo}\\n`;\n  if (c.andamentos.length) {\n    for (const a of c.andamentos) aiText += `- ${a}\\n`;\n  } else aiText += `- Não informado\\n`;\n  aiText += `\\n`;\n}\n\n// Texto detalhado para anexo no DOC (legível)\nlet blocksText = '';\nfor (const c of cases) {\n  blocksText += `\\nProcesso: ${c.processo}\\nCliente: ${c.cliente}\\nJuízo: ${c.juizo}\\nAndamentos:\\n`;\n  blocksText += c.andamentos.length ? c.andamentos.map(a => `  - ${a}`).join('\\n') : '  - Não informado';\n  blocksText += `\\n\\n`;\n}\n\nreturn [{ json: { aiText, blocksText, total: cases.length } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        1440
+      ],
+      "name": "Extrair texto e andamentos (HTML→TXT)1",
+      "id": "ecbd64c0-c0be-40eb-b8ca-ffa4d0cef7c1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6ef6db8d-6e84-45ff-8d83-59ccac548ca6",
+              "name": "doc",
+              "value": "={{\n  Array.isArray($json.aiText)\n    ? $json.aiText.join('\\n\\n---\\n\\n')\n    : (typeof $json.aiText === 'string' && $json.aiText.trim()\n        ? $json.aiText\n        : (Array.isArray($json.blocksText)\n            ? $json.blocksText.join('\\n\\n---\\n\\n')\n            : (typeof $json.blocksText === 'string' && $json.blocksText.trim()\n                ? $json.blocksText\n                : ''\n              )\n          )\n      )\n}}",
+              "type": "string"
+            },
+            {
+              "id": "12b47c76-f327-426d-a929-69da5fc0efba",
+              "name": "total",
+              "value": "={{ Number($json.total ?? 0) }}",
+              "type": "string"
+            },
+            {
+              "id": "0a9f1e0d-e1df-4f00-94c0-ee8777003de0",
+              "name": "doc_clean",
+              "value": "={{   ($json.doc || '')     // remove blocos [https://...]     .replace(/\\[https?:\\/\\/[^\\]]+\\]/g, '')     // remove a palavra 'tratamento' seguida dos links (se sobrar)     .replace(/tratamento\\s*/gi, '')     // normaliza separadores longos de traços     .replace(/[-–—]{4,}/g, '\\n---\\n')     // comprime espaços em excesso (sem mexer em quebras de linha)     .replace(/[^\\S\\r\\n]+/g, ' ')     .trim() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1160,
+        1440
+      ],
+      "id": "8736ed44-cbd1-4cb2-87fc-2c71d4478458",
+      "name": "Preparar texto p/ split (sanitiza/normaliza)1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Texto de entrada\nconst raw = $json.doc_clean || $json.doc || '';\n\nconst text = raw\n  // remove links entre colchetes\n  .replace(/\\[https?:\\/\\/[^\\]]+\\]/g, '')\n  // remove rótulo “tratamento”\n  .replace(/\\btratamento\\b\\s*/gi, '')\n  // normaliza espaços e quebras\n  .replace(/\\r/g, '')\n  .replace(/[ \\t]+\\n/g, '\\n')\n  .trim();\n\n// CNJ: NNNNNNN-NN.AAAA.J.TR.OOOO\nconst CNJ = '\\\\d{7}-\\\\d{2}\\\\.\\\\d{4}\\\\.\\\\d\\\\.\\\\d{2}\\\\.\\\\d{4}';\n\n// Cada caso: de \"Processo: <CNJ>\" até o próximo \"Processo: <CNJ>\" ou fim\nconst re = new RegExp(`Processo:\\\\s*(${CNJ})[\\\\s\\\\S]*?(?=\\\\bProcesso:\\\\s*${CNJ}|$)`, 'g');\n\nconst items = [];\nlet m;\nwhile ((m = re.exec(text)) !== null) {\n  const bloco = m[0].trim();     // já começa em \"Processo: <CNJ>\"\n  const cnj = m[1];\n\n  // (opcional) extrair alguns metadados rápidos\n  const cliente = (bloco.match(/Cliente:\\s*([^\\n]+?)(?:;|\\n)/i) || [])[1] || null;\n  const juizo   = (bloco.match(/Ju[ií]zo:\\s*([^\\n]+?)(?:;|\\n)/i) || [])[1] || null;\n\n  items.push({\n    json: {\n      cnj,\n      cliente: cliente && cliente.trim(),\n      juizo: juizo && juizo.trim(),\n      caseText: bloco\n    }\n  });\n}\n\n// Se nada casar, devolve vazio para facilitar debug\nreturn items.length ? items : [{ json: { error: 'Nenhum bloco de Processo encontrado.' } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        1440
+      ],
+      "id": "f2f77dbb-acdc-4341-8706-9063c65dcc58",
+      "name": "Split por Processo (CNJ)1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2039f066-d204-4eec-a57c-7566ce3588f7",
+              "name": "doc",
+              "value": "={{$json.caseText}}",
+              "type": "string"
+            },
+            {
+              "id": "6f855ce2-2840-4541-ae4f-2bb3413a9c99",
+              "name": "cnj",
+              "value": "={{$json.cnj}}",
+              "type": "string"
+            },
+            {
+              "id": "fefb38cb-a547-4063-b14f-19a5b17b2be9",
+              "name": "cliente",
+              "value": "={{$json.cliente}}",
+              "type": "string"
+            },
+            {
+              "id": "91c17e48-92c8-4e84-9f2f-fd78c6f6f0b3",
+              "name": "juizo",
+              "value": "={{$json.juizo}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1540,
+        1440
+      ],
+      "id": "d19717f1-7d86-4c00-babe-32474aa98125",
+      "name": "Anexar metadados (CNJ/Cliente/Juízo)1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------- Consolidar Relatório + Rows v2 ----------\n// Saída: [{ json: { report, rows, total } }]\n// rows = [{ data, cnj, cliente, juizo, acao, resumo }]\n\nconst BR = new Date().toLocaleDateString('pt-BR');\nconst total = items.length;\n\nfunction cleanAcao(str) {\n  return (str || '')\n    .replace(/\\r/g, '')\n    // tira pontuação/ruído no início\n    .replace(/^(?:[,;.\\s-–—]+)+/i, '')\n    // remove \"se aplicável:\" se vier no começo\n    .replace(/^se\\s+aplic[aá]vel\\s*[:\\-–—]?\\s*/i, '')\n    // espaços duplicados\n    .replace(/\\s{2,}/g, ' ')\n    .trim()\n    // tira pontuação isolada no fim\n    .replace(/^[,;.\\-–—]+$|[,;.\\s]+$/g, s => s.match(/^[,;.\\-–—]+$/) ? '' : '');\n}\n\n// 1) pega a \"Ação sugerida\" da linha principal, 2) ou da \"Provável ação…\",\n// 3) ou coletando os bullets após \"Qual a provável ação…\"\nfunction pegaAcao(txt) {\n  if (!txt) return 'Não informado';\n  const s = txt.replace(/\\r/g, '');\n\n  // (1) \"Ação sugerida: ...\"\n  let m = s.match(/A[cç][ãa]o\\s+sugerida(?:\\s+no\\s+Astrea)?[^:\\n]*[:\\-–—]\\s*(.+)/i);\n  if (m) {\n    let cand = cleanAcao((m[1] || '').split('\\n')[0]);\n    if (cand) return cand;\n  }\n\n  // (2) \"Provável ação a ser realizada no Astrea: ...\"\n  m = s.match(/Prov[\\u00E1a]vel\\s+a[cç][ãa]o.*?Astrea[^:\\n]*[:\\-–—]\\s*(.+)/i);\n  if (m) {\n    let cand = cleanAcao((m[1] || '').split('\\n')[0]);\n    if (cand) return cand;\n  }\n\n  // (3) Coleta os bullets depois de \"Qual a provável ação...\"\n  const lines = s.split('\\n');\n  const idx = lines.findIndex(l =>\n    /Qual\\s+a\\s+prov[\\u00E1a]vel\\s+a[cç][ãa]o.*Astrea/i.test(l)\n  );\n\n  if (idx !== -1) {\n    const bullets = [];\n    for (let i = idx + 1; i < lines.length; i++) {\n      const ln = lines[i].trim();\n      if (!ln) break;\n\n      // para quando começa outra seção do resumo\n      if (/^•\\s*(Processo|Ju[ií]zo|Vara|Principais|Resumo)/i.test(ln)) break;\n\n      // captura \"- ...\" / \"• ...\" / \"1. ...\"\n      let mm = /^(?:[-–—•]\\s*|\\d+\\.\\s*)(.+)$/.exec(ln);\n      if (mm) {\n        bullets.push(cleanAcao(mm[1]));\n      } else if (bullets.length) {\n        // linha quebrada continua o último bullet\n        bullets[bullets.length - 1] = cleanAcao(\n          bullets[bullets.length - 1] + ' ' + ln\n        );\n      }\n    }\n    const joined = bullets.filter(Boolean).join('; ');\n    if (joined) return joined;\n  }\n\n  return 'Não informado';\n}\n\n// Tenta extrair CNJ, cliente e juízo das primeiras linhas do resumo\nfunction parseMetaDoResumo(txt) {\n  const linhas = (txt || '').split('\\n').map(s => s.trim());\n  let cnj = '', cliente = '', juizo = '';\n\n  const lProc = linhas.find(l => /^•?\\s*Processo:\\s*/i.test(l)) || '';\n  const mProc = /Processo:\\s*([0-9.\\-\\/]+)\\s*[—-]\\s*(.+?)\\s*(?:\\(|$)/i.exec(lProc);\n  if (mProc) {\n    cnj = (mProc[1] || '').trim();\n    cliente = (mProc[2] || '').trim();\n  }\n\n  const lJuizo = linhas.find(l => /^•?\\s*Ju[ií]zo\\s*\\/\\s*Vara:\\s*/i.test(l)) || '';\n  const mJuizo = /Ju[ií]zo\\s*\\/\\s*Vara:\\s*(.+)$/i.exec(lJuizo);\n  if (mJuizo) juizo = (mJuizo[1] || '').trim();\n\n  return { cnj, cliente, juizo };\n}\n\nconst linhasRelatorio = [\n  `Andamentos Astrea - ${BR}`,\n  `Total de processos: ${total}`,\n  ''.padEnd(48, '-'),\n  ''\n];\n\nconst rows = [];\n\nfor (const it of items) {\n  const texto = (it.json.output?.text || it.json.resumo || '').trim();\n\n  let cnj = it.json.cnj || '';\n  let cliente = it.json.cliente || '';\n  let juizo = it.json.juizo || '';\n\n  if (!cnj || !cliente || !juizo) {\n    const meta = parseMetaDoResumo(texto);\n    cnj = cnj || meta.cnj;\n    cliente = cliente || meta.cliente;\n    juizo = juizo || meta.juizo;\n  }\n\n  const acao = pegaAcao(texto);\n\n  const resumoMultilinha = texto\n    .replace(/\\r/g, '')\n    .replace(/[ \\t]+\\n/g, '\\n')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n\n  rows.push({ data: BR, cnj, cliente, juizo, acao, resumo: resumoMultilinha });\n}\n\nreturn [{ json: { report: linhasRelatorio.join('\\n'), rows, total } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        1440
+      ],
+      "id": "da93e988-abba-454c-aece-59ada0802f71",
+      "name": "Consolidar Relatório + Rows1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = items[0].json.rows || [];\nreturn rows.map(r => ({ json: r }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        1440
+      ],
+      "id": "0a640cbf-905a-4488-8efc-1271378532e7",
+      "name": "Flatten Rows (1 item por processo)1",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "createFromText",
+        "content": "={{$json.docText}}",
+        "name": "=Andamentos Relatório — {{$now.toFormat('dd-LL-yyyy')}}",
+        "options": {
+          "convertToGoogleDocument": true
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        780,
+        1680
+      ],
+      "id": "f5794733-9fd2-4a82-85b3-eb59e56f80f1",
+      "name": "Gerar Google Doc (relatório)1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "5709c88c-ba00-4de3-8ee7-04081be26775",
+              "name": "Data",
+              "value": "={{$now.toFormat('dd/MM/yyyy')}}",
+              "type": "string"
+            },
+            {
+              "id": "6f060a81-4af1-4e07-a574-e051e02a44bf",
+              "name": "Total",
+              "value": "={{$node[\"Extrair texto e andamentos (HTML→TXT)1\"].json[\"total\"]}}",
+              "type": "string"
+            },
+            {
+              "id": "986d9926-e76f-4e6d-90a1-56da9e21d00d",
+              "name": "Link Doc",
+              "value": "={{$node[\"Gerar Google Doc (relatório)1\"].json[\"webViewLink\"]}}",
+              "type": "string"
+            },
+            {
+              "id": "84919da2-eb24-4891-b5f6-a96e60f48573",
+              "name": "subject",
+              "value": "={{$json.assunto || $json.subject}}",
+              "type": "string"
+            },
+            {
+              "id": "c70a55b2-7066-418b-994b-95e51193be4e",
+              "name": "emailHtml",
+              "value": "={{$json.emailHtml}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        980,
+        1680
+      ],
+      "id": "95ecb2b1-5003-40db-be41-6b4f692983c8",
+      "name": "Montar dados p/ Log (data/total/links)1"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{$env.REPORT_RECIPIENTS || 'destinatario@exemplo.com'}}",
+        "subject": "={{ $node[\"Code3\"].json.assunto || 'Relatório de Andamentos por UF' }}",
+        "message": "={{ $node[\"Code3\"].json.emailHtml || '<p>Corpo indisponível.</p>' }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1160,
+        1680
+      ],
+      "name": "Enviar e-mail com links1",
+      "id": "d8892703-9555-4d97-b73a-04bf72562f4f"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 5
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        380,
+        1440
+      ],
+      "name": "Schedule Trigger",
+      "id": "a24b9835-d48b-4253-9733-3d11cbb1ede7"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Espera 1 item com { rows: [...] }\nconst item0 = items[0]?.json || {};\nconst rows = Array.isArray(item0.rows) ? item0.rows : [];\n\n// Regex CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO\nfunction parseCNJ(cnj) {\n  if (!cnj || typeof cnj !== 'string') return { j: null, tr: null };\n  // Tenta o padrão completo\n  let m = cnj.match(/\\d{7}-\\d{2}\\.\\d{4}\\.(\\d)\\.(\\d{2})\\.\\d{4}/);\n  if (m) return { j: m[1], tr: m[2] };\n  // Tenta fallback mais tolerante (procura \".J.TR.\")\n  m = cnj.match(/\\.([0-9])\\.([0-9]{2})\\./);\n  if (m) return { j: m[1], tr: m[2] };\n  return { j: null, tr: null };\n}\n\n// Tabela TR -> UF (TJs Estaduais)\nconst TR_TO_UF = {\n  '01':'AC','02':'AL','03':'AP','04':'AM','05':'BA','06':'CE','07':'DF','08':'ES','09':'GO',\n  '10':'MA','11':'MT','12':'MS','13':'MG','14':'PA','15':'PB','16':'PR','17':'PE','18':'PI',\n  '19':'RJ','20':'RN','21':'RS','22':'RO','23':'RR','24':'SC','25':'SE','26':'SP','27':'TO'\n};\n\nconst UF_NOME = {\n  'AC':'Acre','AL':'Alagoas','AP':'Amapá','AM':'Amazonas','BA':'Bahia','CE':'Ceará','DF':'Distrito Federal',\n  'ES':'Espírito Santo','GO':'Goiás','MA':'Maranhão','MT':'Mato Grosso','MS':'Mato Grosso do Sul',\n  'MG':'Minas Gerais','PA':'Pará','PB':'Paraíba','PR':'Paraná','PE':'Pernambuco','PI':'Piauí',\n  'RJ':'Rio de Janeiro','RN':'Rio Grande do Norte','RS':'Rio Grande do Sul','RO':'Rondônia',\n  'RR':'Roraima','SC':'Santa Catarina','SE':'Sergipe','SP':'São Paulo','TO':'Tocantins'\n};\n\nconst grupos = {};           // { 'MG': { uf, estado, total, processos: [...] }, ... }\nconst desconhecidos = [];    // [{ cnj, motivo }]\n\n// Enriquecer cada row com UF/Estado\nconst rowsEnriquecidas = rows.map((r) => {\n  const cnj = (r.cnj || '').trim();\n  const { j, tr } = parseCNJ(cnj);\n\n  // Segmento: J=8 é Justiça Estadual\n  if (j !== '8' || !tr) {\n    desconhecidos.push({\n      cnj,\n      motivo: j !== '8'\n        ? `Segmento J=${j || '??'} (não estadual) ou TR ausente`\n        : 'TR ausente/ilegível'\n    });\n    return { ...r, uf: null, estado: null, segmento: j || null };\n  }\n\n  const uf = TR_TO_UF[tr] || null;\n  const estado = uf ? UF_NOME[uf] : null;\n\n  if (!uf) {\n    desconhecidos.push({ cnj, motivo: `TR=${tr} sem mapeamento` });\n  } else {\n    if (!grupos[uf]) {\n      grupos[uf] = { uf, estado, total: 0, processos: [] };\n    }\n    grupos[uf].processos.push(r);\n    grupos[uf].total += 1;\n  }\n\n  return { ...r, uf, estado, segmento: '8' };\n});\n\n// Ordena UFs alfabeticamente (opcional)\nconst por_estado = Object.values(grupos).sort((a, b) => a.estado.localeCompare(b.estado));\n\n// Saída única\nreturn [\n  {\n    json: {\n      total: rows.length,\n      por_estado,\n      desconhecidos,\n      rows_enriquecidas: rowsEnriquecidas\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        1680
+      ],
+      "id": "b7d371b5-b36f-41db-a697-6d08ca7a047f",
+      "name": "Code2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code3 — HTML simples do e-mail + docText para o Google Doc\n\nconst data = items[0]?.json || {};\nconst { total = 0, por_estado = [], desconhecidos = [] } = data;\n\n// Data BR\nconst hoje = new Date();\nconst pad = n => String(n).padStart(2, '0');\nconst dataBR = `${pad(hoje.getDate())}/${pad(hoje.getMonth() + 1)}/${hoje.getFullYear()}`;\n\n// Escapar HTML\nconst esc = (s) => String(s ?? '').replace(/[&<>\"']/g, m => ({\n  '&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;', \"'\":'&#39;'\n}[m]));\n\n// ---------- HTML do e-mail (sem retrátil) ----------\nconst resumoTRs = (por_estado || []).map(e => `\n  <tr>\n    <td style=\"padding:8px;border:1px solid #e5e7eb\">${esc(e.uf)}</td>\n    <td style=\"padding:8px;border:1px solid #e5e7eb\">${esc(e.estado)}</td>\n    <td style=\"padding:8px;border:1px solid #e5e7eb;text-align:right\">${e.total}</td>\n  </tr>`).join('');\n\nconst secoes = (por_estado || []).map(e => {\n  const lis = (e.processos || []).map(p => `\n    <li style=\"margin:0 0 14px 0\">\n      <div style=\"border:1px solid #e5e7eb;border-radius:6px;padding:10px\">\n        <div style=\"font-weight:600;margin-bottom:6px\">\n          <span style=\"background:#eef2ff;color:#3730a3;padding:2px 8px;border-radius:999px;margin-right:8px\">${esc(e.uf)}</span>\n          ${esc(p.cnj || 'CNJ não informado')}\n        </div>\n        <div style=\"margin:4px 0\"><span style=\"color:#555;font-weight:600\">Cliente:</span> ${esc(p.cliente || '-')}</div>\n        <div style=\"margin:4px 0\"><span style=\"color:#555;font-weight:600\">Juízo/Vara:</span> ${esc(p.juizo || '-')}</div>\n        ${p.acao ? `<div style=\"margin:4px 0\"><span style=\"color:#555;font-weight:600\">Ação sugerida:</span> ${esc(p.acao)}</div>` : ''}\n\n        ${p.resumo ? `\n          <div style=\"margin-top:6px;\">\n            <div style=\"font-weight:600; color:#1f2937;\">Resumo</div>\n            <div style=\"margin-top:4px; white-space:pre-line;\">${esc(p.resumo)}</div>\n          </div>` : ''}\n\n      </div>\n    </li>`).join('');\n\n  return `\n    <h3 style=\"margin:24px 0 10px 0\">${esc(e.estado)} - ${e.total} processo(s)</h3>\n    <ol style=\"margin:0 0 0 20px;padding:0\">${lis || '<li><em>Sem itens.</em></li>'}</ol>`;\n}).join('');\n\nconst blocoDesconhecidos = desconhecidos.length ? `\n  <h3 style=\"margin:24px 0 10px 0\">Não classificados</h3>\n  <table style=\"width:100%;border-collapse:collapse;border:1px solid #e5e7eb\">\n    <thead>\n      <tr>\n        <th style=\"text-align:left;background:#f8fafc;border:1px solid #e5e7eb;padding:8px\">CNJ</th>\n        <th style=\"text-align:left;background:#f8fafc;border:1px solid #e5e7eb;padding:8px\">Motivo</th>\n      </tr>\n    </thead>\n    <tbody>\n      ${desconhecidos.map(d => `\n        <tr>\n          <td style=\"padding:8px;border:1px solid #e5e7eb\">${esc(d.cnj)}</td>\n          <td style=\"padding:8px;border:1px solid #e5e7eb\">${esc(d.motivo)}</td>\n        </tr>`).join('')}\n    </tbody>\n  </table>` : '';\n\nconst emailHtml = `\n  <div style=\"font-family:Arial,Helvetica,sans-serif;line-height:1.45;color:#111\">\n    <h2 style=\"margin:0 0 6px 0\">Relatório de Andamentos por UF - ${esc(dataBR)}</h2>\n    <div style=\"color:#555;margin-bottom:16px\">Total de processos: <b>${total}</b></div>\n\n    <div style=\"border:1px solid #e5e7eb;background:#fafafa;border-radius:6px;padding:12px\">\n      <h3 style=\"margin:0 0 8px 0\">Resumo por UF</h3>\n      <table style=\"width:100%;border-collapse:collapse;border:1px solid #e5e7eb\">\n        <thead>\n          <tr>\n            <th style=\"text-align:left;background:#f8fafc;border:1px solid #e5e7eb;padding:8px\">UF</th>\n            <th style=\"text-align:left;background:#f8fafc;border:1px solid #e5e7eb;padding:8px\">Estado</th>\n            <th style=\"text-align:right;background:#f8fafc;border:1px solid #e5e7eb;padding:8px\">Qtde</th>\n          </tr>\n        </thead>\n        <tbody>${resumoTRs || '<tr><td colspan=\"3\" style=\"padding:8px;border:1px solid #e5e7eb\">Sem dados</td></tr>'}</tbody>\n      </table>\n    </div>\n\n    ${secoes}\n    ${blocoDesconhecidos}\n  </div>\n`;\n\nconst assunto = `Relatório de Andamentos por UF - ${dataBR}`;\n\n// ---------- docText para o Google Doc ----------\nfunction plain(s) { return String(s ?? '').replace(/\\r/g,''); }\n\nlet doc = [];\ndoc.push(`Relatório de Andamentos por UF - ${dataBR}`);\ndoc.push(`Total de processos: ${total}`);\ndoc.push('----------------------------------------------');\ndoc.push('');\ndoc.push('Resumo por UF:');\nfor (const e of por_estado || []) doc.push(`- ${e.uf} | ${e.estado} | ${e.total}`);\ndoc.push('');\nfor (const e of por_estado || []) {\n  doc.push(`${e.estado} - ${e.total} processo(s)`);\n  let i = 1;\n  for (const p of e.processos || []) {\n    doc.push(`${i}. [${e.uf}] ${p.cnj || 'CNJ não informado'}`);\n    doc.push(`   Cliente: ${plain(p.cliente || '-')}`);\n    doc.push(`   Juízo/Vara: ${plain(p.juizo || '-')}`);\n    if (p.acao) doc.push(`   Ação sugerida: ${plain(p.acao)}`);\n    if (p.resumo) {\n      doc.push('   Resumo:');\n      for (const ln of plain(p.resumo).split('\\n')) doc.push(`   ${ln}`);\n    }\n    doc.push('');\n    i++;\n  }\n  doc.push('');\n}\nif ((desconhecidos || []).length) {\n  doc.push('Não classificados:');\n  for (const d of desconhecidos) doc.push(`- ${d.cnj} | ${d.motivo}`);\n  doc.push('');\n}\nconst docText = doc.join('\\n');\n\nreturn [{ json: { emailHtml, assunto, docText } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        1680
+      ],
+      "id": "acb83640-6adf-4eb2-9049-08b25d5c2b4a",
+      "name": "Code3"
+    },
+    {
+      "parameters": {
+        "chunkSize": 2000,
+        "chunkOverlap": 150,
+        "options": {
+          "summarizationMethodAndPrompts": {
+            "values": {
+              "combineMapPrompt": "=Você é analista jurídico. Resuma em PT-BR, claro e objetivo:\n\n• Processo: {{$json.cnj}} — {{$json.cliente}} - Coloque esta parte em negrito\n• Juízo / Vara: {{$json.juizo || \"Não informado\"}}\n• Principais movimentações com datas (bullet points)\n• Fazer um resumo do que aconteceu no processo\n• Qual a provável ação a ser realizada no Astrea, se aplicável. Ex: agendamento de audiência, agendamento de data de sessão, marcar prazo para apresentar petição, analisar decisão e o que fazer, agendar prazo para cumprimento de sentença. \n\nRegras: não invente; se faltar dado, diga “Não informado”. Máx. 6–8 linhas.\n\nTexto:\n{text}",
+              "prompt": "=Você receberá abaixo os RESUMOS PARCIAIS (um por trecho do texto).\nConsolide em UM ÚNICO resumo executivo, claro e conciso (máx. 6–8 linhas), mantendo este formato:\n\n• Processo: {{$json.cnj}} — {{$json.cliente}}\n• Juízo / Vara: {{$json.juizo || \"Não informado\"}}\n• Principais movimentações com datas (bullet points)\n• Qual a provável ação a ser realizada no Astrea, se aplicável. Ex: agendamento de audiência, agendamento de data de sessão, marcar prazo para apresentar petição, analisar decisão e o que fazer, agendar prazo para cumprimento de sentença. \n\n\nResumos parciais:\n{text}"
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainSummarization",
+      "typeVersion": 2.1,
+      "position": [
+        1740,
+        1440
+      ],
+      "id": "ad6b0a9f-186e-407c-a2c9-ed120b9baa3c",
+      "name": "Resumo por processo (LLM)"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-5-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-5-mini"
+        },
+        "options": {
+          "responseFormat": "text",
+          "maxRetries": 3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1740,
+        1300
+      ],
+      "id": "b8b2685b-7c95-424b-8fdc-0607e4fc7a61",
+      "name": "gpt-5-mini"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Listar e-mails Astrea (último dia)1": {
+      "main": [
+        [
+          {
+            "node": "Baixar corpo do e-mail1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baixar corpo do e-mail1": {
+      "main": [
+        [
+          {
+            "node": "Extrair texto e andamentos (HTML→TXT)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair texto e andamentos (HTML→TXT)1": {
+      "main": [
+        [
+          {
+            "node": "Preparar texto p/ split (sanitiza/normaliza)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar texto p/ split (sanitiza/normaliza)1": {
+      "main": [
+        [
+          {
+            "node": "Split por Processo (CNJ)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split por Processo (CNJ)1": {
+      "main": [
+        [
+          {
+            "node": "Anexar metadados (CNJ/Cliente/Juízo)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anexar metadados (CNJ/Cliente/Juízo)1": {
+      "main": [
+        [
+          {
+            "node": "Resumo por processo (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidar Relatório + Rows1": {
+      "main": [
+        [
+          {
+            "node": "Flatten Rows (1 item por processo)1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gerar Google Doc (relatório)1": {
+      "main": [
+        [
+          {
+            "node": "Montar dados p/ Log (data/total/links)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar dados p/ Log (data/total/links)1": {
+      "main": [
+        [
+          {
+            "node": "Enviar e-mail com links1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Listar e-mails Astrea (último dia)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code2": {
+      "main": [
+        [
+          {
+            "node": "Code3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code3": {
+      "main": [
+        [
+          {
+            "node": "Gerar Google Doc (relatório)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumo por processo (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Consolidar Relatório + Rows1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "gpt-5-mini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Resumo por processo (LLM)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "e3b03ba4-76ce-4a7d-b03c-fdb99429714c",
+  "id": "fT3OB790fH7z9xDT",
+  "tags": []
+}
